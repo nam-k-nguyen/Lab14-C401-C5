@@ -39,40 +39,60 @@ class RetrievalEvaluator:
                 return 1.0 / (i + 1)  # rank bắt đầu từ 1
         return 0.0
 
+    async def score_one(self, case: Dict, response: Dict) -> Dict:
+        """
+        Score 1 test case - interface for runner per-case evaluation.
+        Signature matches: runner.py line 17 calls evaluator.score(case, response)
+        """
+        expected = case.get("expected_retrieval_ids", [])
+        retrieved = response.get("retrieved_ids", [])
+        
+        return {
+            "hit_rate": self.calculate_hit_rate(expected, retrieved),
+            "mrr": self.calculate_mrr(expected, retrieved),
+        }
+
+    # Alias cho runner gọi .score()
+    async def score(self, case: Dict, response: Dict) -> Dict:
+        """Wrapper - runner calls this."""
+        return await self.score_one(case, response)
+
     async def _eval_one(self, sample: Dict[str, Any]) -> Dict[str, Any]:
         """
-        Eval 1 sample (async)
+        Eval 1 sample (async) - dùng cho evaluate_batch.
+        FIXED: query → question (align with R2 schema)
         """
-        query = sample.get("query")
+        question = sample.get("question")  # Sửa: query → question
         expected_ids = sample.get("expected_retrieval_ids", [])
 
         try:
-            result = await self.agent.run(query)
+            result = await self.agent.run(question)
             retrieved_ids = result.get("retrieved_ids", [])
         except Exception as e:
             return {
-                "query": query,
+                "question": question,
                 "error": str(e),
-                "hit": 0.0,
+                "hit_rate": 0.0,
                 "mrr": 0.0,
                 "retrieved_ids": [],
                 "expected_ids": expected_ids,
             }
 
-        hit = self.calculate_hit_rate(expected_ids, retrieved_ids)
-        mrr = self.calculate_mrr(expected_ids, retrieved_ids)
+        hit_rate = self.calculate_hit_rate(expected_ids, retrieved_ids)
+        mrr_score = self.calculate_mrr(expected_ids, retrieved_ids)
 
         return {
-            "query": query,
-            "hit": hit,
-            "mrr": mrr,
+            "question": question,
+            "hit_rate": hit_rate,
+            "mrr": mrr_score,
             "retrieved_ids": retrieved_ids,
             "expected_ids": expected_ids,
         }
 
     async def evaluate_batch(self, dataset: List[Dict]) -> Dict:
         """
-        Chạy eval toàn bộ dataset (async + concurrent)
+        Eval toàn bộ dataset (async + concurrent).
+        FIXED: Đổi return keys avg_hit_rate → hit_rate, avg_mrr → mrr (align check_lab.py)
         """
 
         tasks = [self._eval_one(sample) for sample in dataset]
@@ -83,19 +103,19 @@ class RetrievalEvaluator:
 
         if not valid_results:
             return {
-                "avg_hit_rate": 0.0,
-                "avg_mrr": 0.0,
+                "hit_rate": 0.0,  # Sửa: avg_hit_rate → hit_rate
+                "mrr": 0.0,       # Sửa: avg_mrr → mrr
                 "total_samples": len(dataset),
                 "valid_samples": 0,
                 "errors": [r for r in results if "error" in r],
             }
 
-        avg_hit = sum(r["hit"] for r in valid_results) / len(valid_results)
+        avg_hit = sum(r["hit_rate"] for r in valid_results) / len(valid_results)
         avg_mrr = sum(r["mrr"] for r in valid_results) / len(valid_results)
 
         return {
-            "avg_hit_rate": avg_hit,
-            "avg_mrr": avg_mrr,
+            "hit_rate": avg_hit,    # Sửa: avg_hit_rate → hit_rate
+            "mrr": avg_mrr,         # Sửa: avg_mrr → mrr
             "total_samples": len(dataset),
             "valid_samples": len(valid_results),
             "errors": [r for r in results if "error" in r],
