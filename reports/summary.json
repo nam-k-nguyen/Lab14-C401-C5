@@ -1,0 +1,54 @@
+{
+  "metadata": {
+    "version": "Agent_V2_Optimized",
+    "total": 54,
+    "timestamp": "2026-04-21 17:48:27"
+  },
+  "metrics": {
+    "avg_score": 2.8805864197530866,
+    "hit_rate": 0.5370370370370371,
+    "mrr": 0.47530864197530864,
+    "agreement_rate": 0.1613425925925926,
+    "total_cost": 0.1971713,
+    "cost_breakdown": {
+      "gpt-4o-mini": 0.010821299999999997,
+      "gemini-2.5-flash-lite": 0.0113225,
+      "gpt-4o": 0.17502750000000006
+    },
+    "p95_latency": 3.2593458000046667
+  },
+  "release_gate": {
+    "decision": "ROLLBACK",
+    "gates": {
+      "quality_improved": true,
+      "hit_rate_ok": false,
+      "agreement_ok": false,
+      "cost_within_budget": true,
+      "latency_p95_ok": false
+    },
+    "deltas": {
+      "score": 0.04864197530864178,
+      "hit_rate": 0.07407407407407413,
+      "cost_pct": 0.07035892914869919
+    },
+    "thresholds": {
+      "hit_rate": 0.85,
+      "agreement_rate": 0.7,
+      "cost_delta_pct": 0.1,
+      "p95_latency_sec": 1.5
+    }
+  },
+  "v1_metrics": {
+    "avg_score": 2.831944444444445,
+    "hit_rate": 0.46296296296296297,
+    "mrr": 0.31790123456790126,
+    "agreement_rate": 0.3258333333333333,
+    "total_cost": 0.18421045,
+    "cost_breakdown": {
+      "gpt-4o-mini": 0.010519199999999994,
+      "gemini-2.5-flash-lite": 0.026821249999999998,
+      "gpt-4o": 0.14687000000000003
+    },
+    "p95_latency": 3.950037250000605
+  }
+}
