@@ -15,7 +15,7 @@ Nhiệm vụ cụ thể:
 - **Thiết kế hạ tầng đo lường**: viết class `CostTracker` (PRICING cho gpt-4o / gpt-4o-mini / gemini-2.5-flash-lite / gemini-1.5-flash, breakdown per-model) và p95 latency trong `engine/runner.py`. Đây là tiền đề để Release Gate có thể dựa trên con số thật thay vì cảm tính.
 - **Thiết kế Release Gate**: hàm `decide_release()` với **5 ngưỡng độc lập** (quality_improved, hit_rate ≥ 0.85, agreement_rate ≥ 0.7, cost_delta ≤ +10%, p95 ≤ 1.5s). Quyết định RELEASE/ROLLBACK là AND của cả 5 — bất kỳ ngưỡng nào trượt → rollback.
 - **Tích hợp**: xoá stub `ExpertEvaluator` / `MultiModelJudge` trong `main.py`, wire `RetrievalEvaluator` (R3) và `LLMJudge` (R4 + R5 gộp) vào pipeline, thêm cost tracker hook vào runner để log token usage tự động sau mỗi judge call.
-- **Merge manager**: resolve 4 lần conflict khi R2 / R3 / R4 / R5 push branch. Trong đó R2 lần 1, R4, R5 đều base từ commit cũ nên phải rebase; R4 và R5 xung đột cứng với nhau trên `engine/llm_judge.py` (cả hai viết lại từ ancestor khác hướng).
+- **Merge manager**: quản lý 4 lần merge (R2/R3/R4/R5) vào main, trong đó **resolve 2 conflict thực sự**: (a) 4 bug của R3 khi merge branch có syntax error, (b) xung đột cứng R4↔R5 trên `engine/llm_judge.py` — cả hai viết lại từ ancestor khác hướng, R1 graft Gemini method của R5 vào LLMJudge class của R4. R2 và R4 merge clean không conflict sau khi họ rebase (R2 lần 1 sai base).
 - **Patch blocker**: sửa 4 lỗi chặn pipeline của R3 (syntax error ở `__main__` block do escape sai, sai tên collection ChromaDB `documents` thay vì `rag_lab`, thiếu field `retrieved_ids` trong response của `MainAgent.query()`, thiếu method alias `run()`) trong 1 commit `[R1-patch]` — để không block cả nhóm mà vẫn giữ R3 làm owner của module.
 - **Team coordination**: viết `PLAN_TEAM.md` (timeline 4 tiếng chia block 15', role matrix, dependency graph, risk mitigation). Plan này giúp nhóm song song hoá tối đa, không ai idle.
 
@@ -48,7 +48,7 @@ So với ~$1.50+ nếu luôn dùng gpt-4o làm Judge chính → **83% cost savin
 
 ### 2.3. Integration vs ownership trade-off
 
-Vai R1 dễ rơi vào bẫy "làm hộ tất cả" khi thấy teammates chậm. Tôi chọn **patch** các blocker nhỏ (syntax error R3, V2 inherit sai base của R5) nhưng **không chiếm** ownership chính — R3 vẫn sở hữu `retrieval_eval.py`, R5 vẫn sở hữu `MainAgentV2`. Commit prefix `[R1-patch]` tách rõ giữa "fix blocker để nhóm tiếp tục" với "làm hộ". Tinh thần: **unblock, không replace**. Điều này quan trọng cho điểm Engineering Contribution cá nhân của cả nhóm — nếu R1 viết hộ, git blame sẽ ghi toàn bộ hiển thị R1, teammates mất evidence.
+Vai R1 dễ rơi vào bẫy "làm hộ tất cả" khi thấy teammates chậm. Tôi chọn **patch** các blocker nhỏ (syntax error R3, V2 inherit sai base của R5) nhưng **không chiếm** ownership chính — R3 vẫn sở hữu `retrieval_eval.py`, R5 sở hữu `MainAgentV2` initial design (sau đó R2 rewrite phần generation của V2 trong commit `431da05`). Commit prefix `[R1-patch]` tách rõ giữa "fix blocker để nhóm tiếp tục" với "làm hộ". Tinh thần: **unblock, không replace**. Điều này quan trọng cho điểm Engineering Contribution cá nhân của cả nhóm — nếu R1 viết hộ, git blame sẽ ghi toàn bộ hiển thị R1, teammates mất evidence.
 
 ### 2.4. Release Gate philosophy — AND over OR
 
@@ -56,7 +56,7 @@ Một thiết kế sai tôi đã cân nhắc rồi loại là "weighted sum rồ
 
 ### 2.5. Stub-first, real-later
 
-Phase 1 tôi giữ `ExpertEvaluator` / `MultiModelJudge` stub trong `main.py` để pipeline chạy được sớm, test logic Release Gate và `compare_regression()` trước khi có real eval. Khi R3/R4/R5 xong, chỉ việc swap import. Nếu chờ có real judge mới viết gate, nhóm đã mất 90 phút. Bài học: **test harness trước, implementation sau** — stub không phải kỹ thuật kém mà là chiến lược de-risk.
+Stub `ExpertEvaluator` / `MultiModelJudge` có sẵn trong template khởi tạo (`main.py:9-24` của commit gốc `8efa7db`). Phase 1 tôi **cố ý không swap sớm** — để pipeline chạy được với stub, qua đó test logic Release Gate và `compare_regression()` trước khi có real eval. Khi R3/R4/R5 xong, chỉ việc swap import (commit `35512c4`). Nếu chờ có real judge mới viết gate, nhóm đã mất 90 phút. Bài học: **test harness trước, implementation sau** — tận dụng stub có sẵn không phải kỹ thuật kém mà là chiến lược de-risk.
 
 ---
 
