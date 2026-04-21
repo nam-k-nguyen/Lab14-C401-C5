@@ -2,26 +2,19 @@ import asyncio
 import json
 import os
 import time
+
+from agent.main_agent import MainAgent, MainAgentV2
+from engine.llm_judge import LLMJudge
+from engine.retrieval_eval import RetrievalEvaluator
 from engine.runner import BenchmarkRunner
-from agent.main_agent import MainAgent
 
-# Giả lập các components Expert
-class ExpertEvaluator:
-    async def score(self, case, resp): 
-        # Giả lập tính toán Hit Rate và MRR
-        return {
-            "faithfulness": 0.9, 
-            "relevancy": 0.8,
-            "retrieval": {"hit_rate": 1.0, "mrr": 0.5}
-        }
 
-class MultiModelJudge:
-    async def evaluate_multi_judge(self, q, a, gt): 
-        return {
-            "final_score": 4.5, 
-            "agreement_rate": 0.8,
-            "reasoning": "Cả 2 model đồng ý đây là câu trả lời tốt."
-        }
+def _build_agent(agent_version: str):
+    """Select agent based on version label ('V2' in name → optimized variant)."""
+    if "V2" in agent_version:
+        return MainAgentV2()
+    return MainAgent()
+
 
 async def run_benchmark_with_results(agent_version: str):
     print(f"🚀 Khởi động Benchmark cho {agent_version}...")
@@ -37,15 +30,23 @@ async def run_benchmark_with_results(agent_version: str):
         print("❌ File data/golden_set.jsonl rỗng. Hãy tạo ít nhất 1 test case.")
         return None, None
 
-    runner = BenchmarkRunner(MainAgent(), ExpertEvaluator(), MultiModelJudge())
+    agent = _build_agent(agent_version)
+    evaluator = RetrievalEvaluator(agent=agent, top_k=3)
+    judge = LLMJudge()
+    runner = BenchmarkRunner(agent, evaluator, judge)
     results = await runner.run_all(dataset)
 
     total = len(results)
     summary = {
-        "metadata": {"version": agent_version, "total": total, "timestamp": time.strftime("%Y-%m-%d %H:%M:%S")},
+        "metadata": {
+            "version": agent_version,
+            "total": total,
+            "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
+        },
         "metrics": {
             "avg_score": sum(r["judge"]["final_score"] for r in results) / total,
-            "hit_rate": sum(r["ragas"]["retrieval"]["hit_rate"] for r in results) / total,
+            "hit_rate": sum(r["ragas"]["hit_rate"] for r in results) / total,
+            "mrr": sum(r["ragas"]["mrr"] for r in results) / total,
             "agreement_rate": sum(r["judge"]["agreement_rate"] for r in results) / total,
             "total_cost": runner.cost_tracker.total(),
             "cost_breakdown": runner.cost_tracker.breakdown(),
@@ -102,18 +103,16 @@ def compare_regression(v1: dict, v2: dict) -> None:
     print("\n📊 --- REGRESSION V1 vs V2 ---")
     print(f"{'Metric':<20} {'V1':>12} {'V2':>12} {'Δ':>12}")
     print("-" * 58)
-    for key in ["avg_score", "hit_rate", "agreement_rate", "total_cost", "p95_latency"]:
+    for key in ["avg_score", "hit_rate", "mrr", "agreement_rate", "total_cost", "p95_latency"]:
         a, b = m1.get(key, 0.0), m2.get(key, 0.0)
         sign = "+" if (b - a) >= 0 else ""
         print(f"{key:<20} {a:>12.4f} {b:>12.4f} {sign}{b-a:>11.4f}")
 
 
 async def main():
-    v1_summary = await run_benchmark("Agent_V1_Base")
-    
-    # Giả lập V2 có cải tiến (để test logic)
+    v1_results, v1_summary = await run_benchmark_with_results("Agent_V1_Base")
     v2_results, v2_summary = await run_benchmark_with_results("Agent_V2_Optimized")
-    
+
     if not v1_summary or not v2_summary:
         print("❌ Không thể chạy Benchmark. Kiểm tra lại data/golden_set.jsonl.")
         return
@@ -122,12 +121,13 @@ async def main():
 
     gate_result = decide_release(v1_summary, v2_summary)
     v2_summary["release_gate"] = gate_result
+    v2_summary["v1_metrics"] = v1_summary["metrics"]
 
     os.makedirs("reports", exist_ok=True)
     with open("reports/summary.json", "w", encoding="utf-8") as f:
         json.dump(v2_summary, f, ensure_ascii=False, indent=2)
     with open("reports/benchmark_results.json", "w", encoding="utf-8") as f:
-        json.dump(v2_results, f, ensure_ascii=False, indent=2)
+        json.dump({"v1": v1_results, "v2": v2_results}, f, ensure_ascii=False, indent=2)
 
     print(f"\n🚦 QUYẾT ĐỊNH: {gate_result['decision']}")
     for name, passed in gate_result["gates"].items():
