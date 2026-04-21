@@ -23,11 +23,9 @@ class MainAgent:
             # Kết nối đến Chroma DB (persistent client)
             self.client = chromadb.PersistentClient(path=self.chroma_db_path)
             
-            # Lấy collection (tên mặc định)
-            self.collection = self.client.get_or_create_collection(
-                name="documents",
-                metadata={"hnsw:space": "cosine"}
-            )
+            # Lấy collection đã index từ Lab08 (KHÔNG dùng get_or_create để
+            # fail rõ ràng nếu chưa copy chroma_db/ — tránh silent empty).
+            self.collection = self.client.get_collection(name="rag_lab")
             print(f"✅ Kết nối Chroma DB từ: {self.chroma_db_path}")
             print(f"   Collection: {self.collection.name}")
             print(f"   Số documents: {self.collection.count()}")
@@ -56,19 +54,21 @@ class MainAgent:
                 n_results=top_k
             )
             
-            # Format lại kết quả
+            # Format lại kết quả — kèm chunk id để tính Hit Rate / MRR
             contexts = []
             if results and results["documents"] and len(results["documents"]) > 0:
                 for i, doc in enumerate(results["documents"][0]):
                     metadata = results["metadatas"][0][i] if results["metadatas"] else {}
                     distance = results["distances"][0][i] if results["distances"] else None
-                    
+                    chunk_id = results["ids"][0][i] if results.get("ids") else None
+
                     contexts.append({
+                        "id": chunk_id,
                         "text": doc,
                         "metadata": metadata,
-                        "similarity_score": 1 - distance if distance is not None else None  # Convert distance to similarity
+                        "similarity_score": 1 - distance if distance is not None else None
                     })
-            
+
             return contexts
         except Exception as e:
             print(f"❌ Lỗi retrieval: {e}")
@@ -94,6 +94,7 @@ class MainAgent:
         return {
             "answer": f"Dựa trên tài liệu: {question}\n\nContext:\n{context_str}",
             "contexts": contexts,
+            "retrieved_ids": [c.get("id") for c in contexts_data if c.get("id")],
             "metadata": {
                 "model": "gpt-4o-mini",
                 "tokens_used": 150,
@@ -103,13 +104,17 @@ class MainAgent:
             }
         }
 
+    async def run(self, question: str) -> Dict:
+        """Alias cho evaluate_batch path (_eval_one gọi agent.run)."""
+        return await self.query(question)
+
+
 if __name__ == "__main__":
-    agent = MainAgent()
-    
-    async def test():
-        print(\"\\n🔍 Testing retrieval + query...\\n\")
-        resp = await agent.query(\"Làm thế nào để đổi mật khẩu?\")
-        print(\"\\n📝 Response:\")\n        import json
+    import json
+
+    async def _test():
+        agent = MainAgent()
+        resp = await agent.query("Đổi mật khẩu thế nào?")
         print(json.dumps(resp, ensure_ascii=False, indent=2))
-    
-    asyncio.run(test())
+
+    asyncio.run(_test())
