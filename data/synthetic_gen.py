@@ -3,6 +3,7 @@ import asyncio
 import os
 from pathlib import Path
 from typing import List, Dict
+import chromadb
 from openai import AsyncOpenAI
 from dotenv import load_dotenv
 
@@ -123,6 +124,25 @@ async def main():
 
     all_pairs.extend(ADVERSARIAL_CASES)
     print(f"  ✓ adversarial manual: {len(ADVERSARIAL_CASES)} cases")
+
+    # Populate expected_retrieval_ids from ChromaDB chunk IDs
+    try:
+        chroma_path = os.path.abspath("chroma_db")
+        chroma_client = chromadb.PersistentClient(path=chroma_path)
+        col = chroma_client.get_collection("rag_lab")
+        all_ids = col.get(include=[])["ids"]
+        stem_to_ids: Dict[str, List[str]] = {}
+        for cid in all_ids:
+            stem = "_".join(cid.split("_")[:-1])
+            stem_to_ids.setdefault(stem, []).append(cid)
+        for pair in all_pairs:
+            gt_ids = []
+            for src in pair.get("expected_sources", []):
+                gt_ids.extend(stem_to_ids.get(src, []))
+            pair["expected_retrieval_ids"] = gt_ids
+        print(f"  ✓ Đã điền expected_retrieval_ids từ ChromaDB ({len(all_ids)} chunks)")
+    except Exception as e:
+        print(f"  ⚠ Không thể điền expected_retrieval_ids: {e}")
 
     output_path = "data/golden_set.jsonl"
     with open(output_path, "w", encoding="utf-8") as f:
