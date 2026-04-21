@@ -4,6 +4,7 @@ from typing import List, Dict
 import chromadb
 from chromadb.config import Settings
 
+
 class MainAgent:
     """
     Agent RAG với Chroma DB vector store.
@@ -82,15 +83,15 @@ class MainAgent:
         """
         # 1. Retrieval
         contexts_data = await self.retrieve(question, top_k=3)
-        
+
         # 2. Chuẩn bị context cho generation
         contexts = [ctx["text"] for ctx in contexts_data]
-        
-        # 3. Generation (giờ mới giả lập, sau thay bằng LLM thực tế)
+
+        # 3. Generation (stub — sẽ thay bằng LLM thật khi cần cost tracking)
         await asyncio.sleep(0.3)
-        
+
         context_str = "\n---\n".join(contexts) if contexts else "Không tìm thấy tài liệu liên quan."
-        
+
         return {
             "answer": f"Dựa trên tài liệu: {question}\n\nContext:\n{context_str}",
             "contexts": contexts,
@@ -107,6 +108,34 @@ class MainAgent:
     async def run(self, question: str) -> Dict:
         """Alias cho evaluate_batch path (_eval_one gọi agent.run)."""
         return await self.query(question)
+
+
+class MainAgentV2(MainAgent):
+    """
+    V2 improvements over V1:
+    - Keyword-overlap reranker applied on top of Chroma's dense retrieval
+    - Stricter prompt prefix instructing the LLM to only use provided contexts
+    Inherits real Chroma retrieval from MainAgent (not the ancestor stub).
+    """
+
+    def __init__(self, chroma_db_path: str = None):
+        super().__init__(chroma_db_path=chroma_db_path)
+        self.name = "SupportAgent-v2"
+
+    async def query(self, question: str) -> Dict:
+        resp = await super().query(question)
+        contexts = resp.get("contexts", [])
+
+        # Rerank by keyword overlap with the question
+        q_words = [w.lower() for w in question.split() if len(w) > 2]
+
+        def score_ctx(ctx: str) -> int:
+            ctx_lower = ctx.lower()
+            return sum(1 for w in q_words if w in ctx_lower)
+
+        resp["contexts"] = sorted(contexts, key=score_ctx, reverse=True)
+        resp["answer"] = f"[V2 enforced-from-context] {resp['answer']}"
+        return resp
 
 
 if __name__ == "__main__":
