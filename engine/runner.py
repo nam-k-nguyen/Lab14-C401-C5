@@ -6,7 +6,7 @@ from typing import List, Dict
 PRICING = {
     "gpt-4o":         {"in": 0.0025, "out": 0.01},
     "gpt-4o-mini":    {"in": 0.00015, "out": 0.0006},
-    "gemini-1.5-pro": {"in": 0.00125, "out": 0.005},
+    "gemini-2.5-flash-lite": {"in": 0.00125, "out": 0.005},
     "gemini-1.5-flash": {"in": 0.000075, "out": 0.0003},
 }
 

@@ -16,7 +16,7 @@ class LLMJudge:
     def __init__(
         self,
         gpt_model: str = "gpt-4o-mini",
-        gemini_model: str = "gemini-1.5-pro",
+        gemini_model: str = "gemini-2.5-flash-lite",
         tie_breaker_model: str = "gpt-4o",
     ):
         self.gpt_client = AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY"))

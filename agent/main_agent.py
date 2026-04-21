@@ -1,31 +1,44 @@
 import asyncio
 import os
-from typing import List, Dict
+from typing import List, Dict, Tuple
 import chromadb
 from chromadb.config import Settings
+from sentence_transformers import SentenceTransformer
+from openai import AsyncOpenAI
+from dotenv import load_dotenv
+
+load_dotenv()
+
+_SYSTEM_V1 = (
+    "Bạn là trợ lý hỗ trợ nội bộ công ty. "
+    "Trả lời câu hỏi của nhân viên dựa trên tài liệu được cung cấp. "
+    "Nếu thông tin không có trong tài liệu, hãy nói rõ là bạn không có thông tin đó."
+)
+
+_SYSTEM_V2 = (
+    "Bạn là trợ lý hỗ trợ nội bộ công ty chuyên nghiệp. Quy tắc bắt buộc:\n"
+    "1. CHỈ sử dụng thông tin trong Context được cung cấp — không bịa đặt.\n"
+    "2. Trích dẫn cụ thể số liệu, điều kiện, quy trình từ tài liệu.\n"
+    "3. Nếu câu hỏi ngoài phạm vi tài liệu, từ chối lịch sự và nêu lý do.\n"
+    "4. Trả lời đầy đủ, có cấu trúc rõ ràng."
+)
 
 
 class MainAgent:
-    """
-    Agent RAG với Chroma DB vector store.
-    Sinh viên nên thay thế phần Generation bằng actual LLM integration.
-    """
-    def __init__(self, chroma_db_path: str = None):
+    def __init__(self, chroma_db_path: str = None, system_prompt: str = None):
         self.name = "SupportAgent-v1"
-        
-        # Khởi tạo Chroma DB
+        self._system_prompt = system_prompt or _SYSTEM_V1
+        self.llm = AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+
         if chroma_db_path is None:
-            # Tìm chroma_db folder từ thư mục làm việc hiện tại
             chroma_db_path = os.path.join(os.path.dirname(__file__), "..", "chroma_db")
-        
+
         self.chroma_db_path = os.path.abspath(chroma_db_path)
-        
+
         try:
-            # Kết nối đến Chroma DB (persistent client)
             self.client = chromadb.PersistentClient(path=self.chroma_db_path)
-            
-            # Lấy collection đã index từ Lab08 (KHÔNG dùng get_or_create để
-            # fail rõ ràng nếu chưa copy chroma_db/ — tránh silent empty).
+            self.embedder = SentenceTransformer("all-MiniLM-L6-v2")
+            # Không truyền embedding_function để tránh conflict với persisted "default"
             self.collection = self.client.get_collection(name="rag_lab")
             print(f"✅ Kết nối Chroma DB từ: {self.chroma_db_path}")
             print(f"   Collection: {self.collection.name}")
@@ -34,28 +47,19 @@ class MainAgent:
             print(f"⚠️  Lỗi kết nối Chroma DB: {e}")
             print(f"   Đường dẫn: {self.chroma_db_path}")
             self.collection = None
+            self.embedder = None
 
     async def retrieve(self, question: str, top_k: int = 3) -> List[Dict]:
-        """
-        Thực hiện retrieval từ Chroma DB.
-        Args:
-            question: Câu hỏi của user
-            top_k: Số lượng documents trả về
-        Returns:
-            Danh sách documents liên quan
-        """
         if self.collection is None:
-            print(f"⚠️  Không có collection, trả về empty results")
             return []
-        
+
         try:
-            # Query Chroma DB
+            embedding = self.embedder.encode(question).tolist()
             results = self.collection.query(
-                query_texts=[question],
-                n_results=top_k
+                query_embeddings=[embedding],
+                n_results=top_k,
             )
-            
-            # Format lại kết quả — kèm chunk id để tính Hit Rate / MRR
+
             contexts = []
             if results and results["documents"] and len(results["documents"]) > 0:
                 for i, doc in enumerate(results["documents"][0]):
@@ -67,42 +71,47 @@ class MainAgent:
                         "id": chunk_id,
                         "text": doc,
                         "metadata": metadata,
-                        "similarity_score": 1 - distance if distance is not None else None
+                        "similarity_score": 1 - distance if distance is not None else None,
                     })
-
             return contexts
         except Exception as e:
             print(f"❌ Lỗi retrieval: {e}")
             return []
 
-    async def query(self, question: str) -> Dict:
-        """
-        Quy trình RAG:
-        1. Retrieval: Tìm kiếm context liên quan từ Chroma DB.
-        2. Generation: Gọi LLM để sinh câu trả lời (TODO: integrate LLM).
-        """
-        # 1. Retrieval
-        contexts_data = await self.retrieve(question, top_k=3)
-
-        # 2. Chuẩn bị context cho generation
-        contexts = [ctx["text"] for ctx in contexts_data]
-
-        # 3. Generation (stub — sẽ thay bằng LLM thật khi cần cost tracking)
-        await asyncio.sleep(0.3)
-
+    async def _generate(self, question: str, contexts: List[str]) -> Tuple[str, int]:
         context_str = "\n---\n".join(contexts) if contexts else "Không tìm thấy tài liệu liên quan."
+        user_prompt = f"Context:\n{context_str}\n\nCâu hỏi: {question}"
+
+        try:
+            response = await self.llm.chat.completions.create(
+                model="gpt-4o-mini",
+                messages=[
+                    {"role": "system", "content": self._system_prompt},
+                    {"role": "user", "content": user_prompt},
+                ],
+                temperature=0,
+                max_tokens=600,
+            )
+            return response.choices[0].message.content, response.usage.total_tokens
+        except Exception as e:
+            return f"Lỗi generation: {e}", 0
+
+    async def query(self, question: str) -> Dict:
+        contexts_data = await self.retrieve(question, top_k=3)
+        contexts = [ctx["text"] for ctx in contexts_data]
+        answer, tokens_used = await self._generate(question, contexts)
 
         return {
-            "answer": f"Dựa trên tài liệu: {question}\n\nContext:\n{context_str}",
+            "answer": answer,
             "contexts": contexts,
             "retrieved_ids": [c.get("id") for c in contexts_data if c.get("id")],
             "metadata": {
                 "model": "gpt-4o-mini",
-                "tokens_used": 150,
+                "tokens_used": tokens_used,
                 "sources": [ctx["metadata"].get("source", "unknown") for ctx in contexts_data],
                 "num_contexts": len(contexts),
-                "retrieval_scores": [ctx["similarity_score"] for ctx in contexts_data]
-            }
+                "retrieval_scores": [ctx["similarity_score"] for ctx in contexts_data],
+            },
         }
 
     async def run(self, question: str) -> Dict:
@@ -113,29 +122,40 @@ class MainAgent:
 class MainAgentV2(MainAgent):
     """
     V2 improvements over V1:
-    - Keyword-overlap reranker applied on top of Chroma's dense retrieval
-    - Stricter prompt prefix instructing the LLM to only use provided contexts
-    Inherits real Chroma retrieval from MainAgent (not the ancestor stub).
+    - Retrieve top-5 then rerank by keyword overlap BEFORE generation
+    - Stricter system prompt requiring exact citations and structured output
     """
 
     def __init__(self, chroma_db_path: str = None):
-        super().__init__(chroma_db_path=chroma_db_path)
+        super().__init__(chroma_db_path=chroma_db_path, system_prompt=_SYSTEM_V2)
         self.name = "SupportAgent-v2"
 
     async def query(self, question: str) -> Dict:
-        resp = await super().query(question)
-        contexts = resp.get("contexts", [])
+        # Retrieve more candidates, then rerank top-3 before generation
+        contexts_data = await self.retrieve(question, top_k=5)
 
-        # Rerank by keyword overlap with the question
         q_words = [w.lower() for w in question.split() if len(w) > 2]
 
-        def score_ctx(ctx: str) -> int:
-            ctx_lower = ctx.lower()
-            return sum(1 for w in q_words if w in ctx_lower)
+        def _keyword_score(ctx_dict: Dict) -> int:
+            text = ctx_dict["text"].lower()
+            return sum(1 for w in q_words if w in text)
 
-        resp["contexts"] = sorted(contexts, key=score_ctx, reverse=True)
-        resp["answer"] = f"[V2 enforced-from-context] {resp['answer']}"
-        return resp
+        reranked = sorted(contexts_data, key=_keyword_score, reverse=True)[:3]
+        contexts = [ctx["text"] for ctx in reranked]
+        answer, tokens_used = await self._generate(question, contexts)
+
+        return {
+            "answer": answer,
+            "contexts": contexts,
+            "retrieved_ids": [c.get("id") for c in reranked if c.get("id")],
+            "metadata": {
+                "model": "gpt-4o-mini",
+                "tokens_used": tokens_used,
+                "sources": [ctx["metadata"].get("source", "unknown") for ctx in reranked],
+                "num_contexts": len(contexts),
+                "retrieval_scores": [ctx["similarity_score"] for ctx in reranked],
+            },
+        }
 
 
 if __name__ == "__main__":
