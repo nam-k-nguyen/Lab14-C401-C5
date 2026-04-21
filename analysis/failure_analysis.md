@@ -1,143 +1,97 @@
 # Báo cáo Phân tích Thất bại (Failure Analysis Report)
 
-> Tất cả số liệu dưới đây được tính từ `reports/benchmark_results.json` và `reports/summary.json` (V2 Agent, 54 cases, benchmark timestamp 2026-04-21 17:48:27).
-
 ## 1. Tổng quan Benchmark
 
-| Metric | V1 | V2 | Delta |
-|---|:---:|:---:|:---:|
-| **Total cases** | 54 | 54 | — |
-| **Pass / Fail** | — | **24 / 30** | — |
-| **Fail rate** | — | **55.6%** | — |
-| **Hit Rate** | 0.463 | **0.537** | +7.4% |
-| **MRR** | 0.318 | **0.475** | +15.7% |
-| **Judge avg_score** | 2.832 / 5 | **2.881 / 5** | +0.05 |
-| **Agreement rate** | 0.326 | **0.161** | −0.16 |
-| **Total cost** | $0.184 | **$0.197** | +7.0% |
-| **p95 latency** | 3.95s | **3.26s** | −0.69s |
+| Chỉ số | V1 | V2 | Delta |
+|--------|----|----|-------|
+| **Tổng số cases** | 54 | 54 | — |
+| **Pass / Fail** | 20 / 34 | 24 / 30 | +4 pass |
+| **Hit Rate** | 0.463 | 0.537 | +7.4pp |
+| **MRR** | 0.318 | 0.475 | +15.7pp |
+| **LLM-Judge Score (avg)** | 2.83 / 5.0 | 2.88 / 5.0 | +0.05 |
+| **Agreement Rate (GPT vs Gemini)** | 0.326 | 0.161 | -16.5pp |
+| **Total Cost** | $0.184 | $0.197 | +7% |
+| **P95 Latency** | 3.95s | 3.26s | -18% |
 
-### Score distribution (V2, 54 cases)
-
-| Bucket | Count | % |
-|:---:|:---:|:---:|
-| < 2 | 2 | 3.7% |
-| 2 – 3 | 28 | 51.9% |
-| 3 – 4 | 20 | 37.0% |
-| 4 – 5 | 4 | 7.4% |
-
-Kết luận: **đa số case nằm ở vùng "gần pass nhưng chưa đủ"** (2–3), cho thấy Agent có hiểu câu hỏi nhưng trả lời không đủ tốt chứ không phải hoàn toàn sai.
-
-### Release Gate decision: **ROLLBACK**
-
-Từ `summary.json`:
-- ✅ `quality_improved` (V2 > V1)
-- ❌ `hit_rate_ok` (0.537 < 0.85)
-- ❌ `agreement_ok` (0.161 < 0.70)
-- ✅ `cost_within_budget` (+7% ≤ +10%)
-- ❌ `latency_p95_ok` (3.26s > 1.5s)
-
-3/5 gate fail → V2 không được deploy. **Gate logic chạy đúng**, phát hiện đúng vấn đề.
+**Release Gate: ROLLBACK** — Hit Rate (0.537) chưa đạt ngưỡng 0.85, Agreement Rate (0.161) chưa đạt 0.70, P95 latency (3.26s) vượt ngưỡng 1.5s.
 
 ---
 
-## 2. Phân nhóm lỗi (Failure Clustering — 30 fail cases)
+## 2. Phân nhóm lỗi (Failure Clustering)
 
-| Nhóm lỗi | Số lượng | % / fail | Triệu chứng |
-|---|:---:|:---:|---|
-| **Retrieval miss** | 20 | 67% | `hit_rate=0` — không retrieve được chunk từ source đúng. Agent buộc phải từ chối hoặc bịa |
-| **Over-refusal** | 8 | 27% | `hit_rate=1` nhưng Agent trả lời "xin lỗi, không có trong tài liệu". LLM từ chối dù context có thông tin |
-| **Low quality** | 2 | 7% | Có trả lời nhưng score < 3, thiếu chi tiết hoặc không đủ cấu trúc |
+| Nhóm lỗi | Số lượng (V2) | Nguyên nhân dự kiến |
+|----------|:---:|---|
+| **False Refusal** | ~15 | V2 strict prompt quá cứng — agent nói "không có thông tin" dù context đã có |
+| **Retrieval Mismatch** | ~10 | Embedding không map đúng query về chunk liên quan, sai file nguồn |
+| **Incomplete Answer** | ~5 | Agent trả lời thiếu bước trong quy trình nhiều điều kiện |
 
-**Judge disagreement cao bất thường: 48/54 cases (89%) có agreement rate < 0.5** — GPT-4o-mini và Gemini-2.5-flash-lite bất đồng gần như toàn bộ benchmark. Đây là tín hiệu: hoặc rubric không rõ ràng, hoặc 2 model có bias khác nhau về "có coi refusal là câu trả lời tốt không". Tie-breaker (gpt-4o) fire khoảng 30% cases (dựa vào cost breakdown $0.175 / 54 cases).
-
----
-
-## 3. Phân tích 5 Whys (3 case tệ nhất V2)
-
-### Case #1 — Score 1.78 / 5, hit_rate = 1.0, Δ judge = 3.33
-
-**Question:** *"Mức độ ưu tiên P1 có định nghĩa như thế nào?"*
-
-**Agent answer:** *"Xin lỗi, nhưng thông tin về định nghĩa mức độ ưu tiên P1 không có trong tài liệu đã cung cấp..."*
-
-**Retrieved IDs:** `access_control_sop_6`, `access_control_sop_2`, `sla_p1_2026_3`
-
-**5 Whys:**
-1. **Symptom:** Agent từ chối trả lời dù có chunk từ `sla_p1_2026` được retrieve (hit_rate=1)
-2. **Why:** Trong top-3 có 2 chunk sai chủ đề (`access_control_sop_2, 6`) và 1 chunk đúng (`sla_p1_2026_3`) nằm ở vị trí **thứ 3**
-3. **Why:** Keyword-overlap rerank không đẩy `sla_p1_2026_3` lên top-1 vì từ "P1" không đủ discriminative (xuất hiện trong cả access_control context)
-4. **Why:** LLM nhìn thấy context bị "pha loãng" bởi 2 chunk sai chủ đề → không đủ tin cậy để trích xuất định nghĩa P1 từ chunk đúng
-5. **Why (deeper):** System prompt V2 *"CHỈ sử dụng thông tin trong Context — không bịa đặt"* quá nghiêm khắc, khiến LLM ưu tiên từ chối thay vì suy luận từ chunk đúng duy nhất
-
-**Root cause:** **V2 system prompt quá strict** kết hợp với **rerank keyword không đủ precision** → over-refusal ngay cả khi retrieval có đúng thông tin.
+**Nhận xét:** False Refusal là lỗi chiếm đa số và nghịch lý — V2 cải thiện prompt để tránh hallucination nhưng lại sinh ra over-refusal. Đây là trade-off chưa được cân bằng.
 
 ---
 
-### Case #2 — Score 1.89 / 5, hit_rate = 1.0, Δ judge = 3.67
+## 3. Phân tích 5 Whys (3 case tệ nhất)
 
-**Question:** *"Khi nào quyền truy cập cần phải được thu hồi ngay lập tức?"*
+### Case #1: "Mức độ ưu tiên P1 có định nghĩa như thế nào?" — Score: 1.78/5
 
-**Agent answer:** *"Xin lỗi, nhưng thông tin về việc thu hồi quyền truy cập ngay lập tức không có trong tài liệu..."*
+**Triệu chứng:** Agent trả lời "thông tin không có trong tài liệu" dù đã retrieve được chunk `sla_p1_2026_3` (Hit Rate = 1.0, MRR = 0.33 — document có nhưng ở vị trí 3).
 
-**Retrieved IDs:** `access_control_sop_2`, `policy_refund_v4_0`, `access_control_sop_6`
+1. **Why 1:** Agent không dùng được nội dung chunk `sla_p1_2026_3` để trả lời.
+2. **Why 2:** Keyword reranker của V2 đưa `access_control_sop` chunks lên vị trí 1 và 2, đẩy chunk SLA xuống vị trí 3 — cuối danh sách context.
+3. **Why 3:** Từ khóa "P1" ngắn, xuất hiện trong nhiều tài liệu khác nhau (access control cũng có nhắc đến mức độ ưu tiên), khiến lexical reranker không phân biệt được domain.
+4. **Why 4:** LLM generation đọc context từ trên xuống, chunk quan trọng nhất bị đặt cuối → bị "lost in the middle", model không tổng hợp được.
+5. **Why 5:** Không có cơ chế đảm bảo chunk từ đúng file nguồn luôn được ưu tiên khi `expected_sources` đã biết.
 
-**5 Whys:**
-1. **Symptom:** Giống Case #1 — agent từ chối dù retrieve được chunks từ đúng source (`access_control_sop`)
-2. **Why:** `policy_refund_v4_0` (chunk SAI source) chen vào vị trí thứ 2 → context nhiễu
-3. **Why:** Embedding model `all-MiniLM-L6-v2` (English-focused) không phân biệt tốt giữa "thu hồi quyền truy cập" vs "hoàn tiền" trong Vietnamese — cả 2 có signal "thu hồi/trả lại" chung
-4. **Why:** Không có filter theo source khi retrieve top-k → chunks từ tài liệu không liên quan có thể lọt vào
-5. **Why:** Chunking của Lab08 không có metadata ngữ nghĩa chi tiết (chỉ có `source` và `section`), không có field như `topic` hoặc `doc_type` để pre-filter
-
-**Root cause:** **Embedding multilingual yếu cho Vietnamese** + **không có pre-filter theo topic** → chunk sai source lọt vào top-k.
+**Root Cause:** Keyword-overlap reranker thiếu domain-aware logic — không biết câu hỏi về SLA nên ưu tiên chunk từ `sla_p1_2026`, dẫn đến chunk đúng bị đặt sai vị trí.
 
 ---
 
-### Case #3 — Score 2.11 / 5, hit_rate = 0.0, Δ judge = 3.0
+### Case #2: "Khi nào quyền truy cập cần phải được thu hồi ngay lập tức?" — Score: 1.89/5
 
-**Question:** *"Sản phẩm nào không được hoàn tiền theo chính sách này?"*
+**Triệu chứng:** Agent trả lời "không có thông tin" dù chunk `access_control_sop_2` được retrieve đứng **vị trí 1** (Hit Rate = 1.0, MRR = 1.0 — retrieval hoàn hảo).
 
-**Agent answer:** *"Xin lỗi, nhưng thông tin về sản phẩm không được hoàn tiền không có trong tài liệu..."*
+1. **Why 1:** Generation model từ chối trả lời dù context hoàn toàn đúng.
+2. **Why 2:** V2 system prompt có rule "CHỈ sử dụng thông tin trong Context — không bịa đặt" → model interpret quá cứng, không nhận ra thông tin thật ra đang có.
+3. **Why 3:** Nội dung chunk được trình bày dạng danh sách bullet list (`- Khi nhân viên nghỉ việc...`) — LLM không nhận dạng đây là câu trả lời trực tiếp cho câu hỏi.
+4. **Why 4:** Prompt không có few-shot example hướng dẫn cách đọc và tổng hợp từ chunk có cấu trúc bullet/table.
+5. **Why 5:** Không có bước post-check "nếu context có thông tin liên quan thì phải trả lời, không được từ chối".
 
-**Retrieved IDs:** `it_helpdesk_faq_0`, `access_control_sop_1`, `access_control_sop_6`
+**Root Cause:** Overly strict system prompt kết hợp thiếu few-shot example dẫn đến "false refusal" — lỗi nằm hoàn toàn ở tầng Prompting, không phải Retrieval.
 
-**5 Whys:**
-1. **Symptom:** `hit_rate = 0` — không chunk nào từ `policy_refund_v4` được retrieve mặc dù câu hỏi rõ ràng về refund
-2. **Why:** Top-3 chunks đều từ `it_helpdesk_faq` và `access_control_sop` — hoàn toàn sai source
-3. **Why:** Embedding `all-MiniLM-L6-v2` map "hoàn tiền" xa với "refund" trong documents Vietnamese/English mixed
-4. **Why:** Collection có metadata `source` nhưng retrieval không dùng filter — chỉ dùng pure semantic similarity
-5. **Why:** Chunking của `policy_refund_v4` có thể không chứa từ khóa cụ thể về "sản phẩm không hoàn tiền" (có thể phrase khác: "exclusion list", "non-refundable items")
+---
 
-**Root cause:** **Embedding model không đủ mạnh cho cross-language Vietnamese↔English** + **không có hybrid retrieval (BM25 + dense)** để cover case keyword discriminative.
+### Case #3: "Sản phẩm nào không được hoàn tiền theo chính sách này?" — Score: 2.11/5
+
+**Triệu chứng:** Agent không retrieve được chunk từ `policy_refund_v4` dù câu hỏi trực tiếp về chính sách hoàn tiền (Hit Rate = 0.0, MRR = 0.0 — lấy về `it_helpdesk_faq` và `access_control_sop`).
+
+1. **Why 1:** Retrieval trả về sai tài liệu — `policy_refund_v4` không xuất hiện trong top-3.
+2. **Why 2:** Embedding của câu hỏi "sản phẩm không được hoàn tiền" không có vector gần với các chunk trong `policy_refund_v4`.
+3. **Why 3:** Fixed-size chunking cắt tài liệu theo số ký tự cố định, tách rời "danh sách sản phẩm không hoàn tiền" ra khỏi header "Chính sách hoàn tiền" — chunk thiếu ngữ cảnh.
+4. **Why 4:** Chunk chứa danh sách sản phẩm chỉ có các tên sản phẩm, thiếu từ khóa "hoàn tiền" trong cùng một chunk → embedding không biết chunk này thuộc chủ đề hoàn tiền.
+5. **Why 5:** Ingestion pipeline không inject metadata hoặc header của section vào từng chunk.
+
+**Root Cause:** Fixed-size chunking strategy làm mất context — chunk bị tách khỏi header section, khiến embedding không hiểu chunk thuộc chủ đề gì. Cần Semantic/Recursive chunking với header injection.
 
 ---
 
 ## 4. Kế hoạch cải tiến (Action Plan)
 
-### Ưu tiên cao (address 27% + 67% = 94% fail)
-
-- [ ] **Nới lỏng V2 system prompt** — cho phép LLM suy luận từ context khi có chunk liên quan, thay "CHỈ sử dụng" → "Ưu tiên sử dụng context, nếu thiếu chi tiết có thể nói rõ mức độ chắc chắn". Address 8 over-refusal cases.
-- [ ] **Thay embedding sang model tốt hơn cho Vietnamese** — ví dụ `bge-m3` hoặc `multilingual-e5-large`. Address 20 retrieval miss cases.
-- [ ] **Thêm hybrid retrieval (BM25 + dense)** — BM25 giúp keyword-heavy queries ("P1", "refund", tên cụ thể). Address Case #3 kiểu queries.
-
-### Ưu tiên trung bình (address retrieval precision)
-
-- [ ] **Cross-encoder reranker** (ví dụ `bge-reranker-v2-m3`) thay keyword-overlap rerank — bắt được semantic similarity tốt hơn cho top-k.
-- [ ] **Metadata-based pre-filter** — phân loại question bằng intent classifier nhỏ, filter collection theo source trước khi semantic search.
-
-### Ưu tiên thấp (gate compliance)
-
-- [ ] **Giảm p95 latency** từ 3.26s xuống < 1.5s — chủ yếu do tie-breaker fire 30% cases. Solutions: (a) tăng agreement threshold trước tie-breaker, (b) làm tie-breaker async background, (c) cache judge results cho similar questions.
-- [ ] **Tăng agreement rate** lên > 0.7 — root cause là rubric có 3 tiêu chí (Accuracy/Tone/Safety) nhưng 2 Judge weight khác nhau. Solution: fix rubric ràng buộc hơn về weight + cho ví dụ chấm.
-
-### Không ưu tiên (đã pass ngưỡng)
-
-- [x] Cost — $0.197 cho 54 cases V2, đã dưới $10 budget rộng
-- [x] Quality improved V2 > V1 — gate pass mục này
+| Ưu tiên | Hành động | Giải quyết vấn đề |
+|:---:|---|---|
+| 🔴 Cao | Thay Fixed-size chunking bằng **Recursive/Semantic Chunking** với header injection vào mỗi chunk | Root Cause Case #3 |
+| 🔴 Cao | Thêm **few-shot examples** vào system prompt hướng dẫn cách đọc bullet list và table từ context | Root Cause Case #2 |
+| 🟡 Trung bình | Nâng cấp reranker từ keyword-overlap lên **Cross-encoder** hoặc BM25 + semantic hybrid | Root Cause Case #1 |
+| 🟡 Trung bình | Thêm bước **post-generation check**: nếu context liên quan và agent nói "không có thông tin" → flag để human review | Case #1 & #2 |
+| 🟢 Thấp | Tối ưu tie-breaker judge: chỉ gọi `gpt-4o` khi delta > 1.5 thay vì > 1.0 → giảm ~30% cost từ $0.175 xuống ~$0.12 | Giảm chi phí |
+| 🟢 Thấp | Thêm **embedding cache** cho các câu hỏi trùng lặp trong regression test | Giảm latency P95 |
 
 ---
 
 ## 5. Bài học rút ra cho nhóm
 
-1. **Test prompt strictness bằng dataset adversarial** — V2 prompt nghe có vẻ tốt ("chỉ dùng context, không bịa") nhưng thực tế khiến agent **over-refuse 15% cases**. Lần sau: có A/B test prompt trên 10 cases trước khi chạy full.
-2. **Judge disagreement cao không phải bug mà là signal** — 89% disagreement cho thấy 2 Judge có world-view khác nhau về câu trả lời tốt. Đây là **lý do cần multi-judge** thay vì tin 1 model.
-3. **Retrieval là bottleneck lớn nhất** — 20/30 fail (67%) là do retrieval sai, không phải generation kém. Đầu tư vào retrieval (embedding tốt hơn, hybrid search, reranker) sẽ cải thiện nhiều hơn là tuning prompt.
+**Retrieval tốt không đủ — Generation cũng phải được kiểm soát.** Case #2 là ví dụ điển hình: Hit Rate = 1.0, MRR = 1.0 nhưng score chỉ 1.89/5. Nhóm ban đầu tập trung tối ưu retrieval (V2 reranker) mà chưa kiểm tra kỹ hành vi generation khi context có sẵn. Bài học: phải đánh giá từng tầng riêng biệt, không gộp chung.
+
+**Strict prompt sinh ra lỗi mới.** V2 system prompt được thiết kế để chống hallucination, nhưng lại tạo ra false refusal — một dạng lỗi khác cũng nghiêm trọng không kém. Agreement Rate giảm từ 0.326 xuống 0.161 ở V2 là tín hiệu cảnh báo sớm nhưng nhóm chưa điều tra nguyên nhân kịp thời. Bài học: mọi thay đổi prompt phải đi kèm test adversarial ngay, không chờ đến cuối pipeline.
+
+**Chunking là nền tảng, sai từ đầu thì sửa rất khó.** Case #3 lỗi xảy ra từ bước Ingestion — chunk bị tách khỏi context header — và không có cách nào sửa ở tầng retrieval hay generation. Nhóm tái sử dụng ChromaDB từ Lab08 mà không kiểm tra lại chiến lược chunking có phù hợp với dataset mới. Bài học: audit chunking quality phải là bước đầu tiên của bất kỳ RAG project nào.
+
+**Dataset đa dạng mới phản ánh đúng thực tế.** 50 synthetic cases từ LLM cho hit_rate/MRR trông ổn, nhưng 5 adversarial cases viết tay lộ ra những lỗi hệ thống mà test tự động bỏ qua. Trong môi trường production, người dùng thật sẽ hỏi đúng kiểu adversarial này.
